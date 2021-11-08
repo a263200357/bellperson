@@ -1,4 +1,4 @@
-DEVICE uint bitreverse(uint n, uint bits) {
+uint bitreverse(uint n, uint bits) {
   uint r = 0;
   for(int i = 0; i < bits; i++) {
     r = (r << 1) | (n & 1);
@@ -10,27 +10,19 @@ DEVICE uint bitreverse(uint n, uint bits) {
 /*
  * FFT algorithm is inspired from: http://www.bealto.com/gpu-fft_group-1.html
  */
-KERNEL void radix_fft(GLOBAL FIELD* x, // Source buffer
-                      GLOBAL FIELD* y, // Destination buffer
-                      GLOBAL FIELD* pq, // Precalculated twiddle factors
-                      GLOBAL FIELD* omegas, // [omega, omega^2, omega^4, ...]
-                      LOCAL FIELD* u_arg, // Local buffer to store intermediary values
-                      uint n, // Number of elements
-                      uint lgp, // Log2 of `p` (Read more in the link above)
-                      uint deg, // 1=>radix2, 2=>radix4, 3=>radix8, ...
-                      uint max_deg) // Maximum degree supported, according to `pq` and `omegas`
+__kernel void radix_fft(__global FIELD* x, // Source buffer
+                        __global FIELD* y, // Destination buffer
+                        __global FIELD* pq, // Precalculated twiddle factors
+                        __global FIELD* omegas, // [omega, omega^2, omega^4, ...]
+                        __local FIELD* u, // Local buffer to store intermediary values
+                        uint n, // Number of elements
+                        uint lgp, // Log2 of `p` (Read more in the link above)
+                        uint deg, // 1=>radix2, 2=>radix4, 3=>radix8, ...
+                        uint max_deg) // Maximum degree supported, according to `pq` and `omegas`
 {
-// CUDA doesn't support local buffers ("shared memory" in CUDA lingo) as function arguments,
-// ignore that argument and declare the external memory here instead.
-#ifdef CUDA
-  extern LOCAL FIELD u[];
-#else
-   LOCAL FIELD* u = u_arg;
-#endif
-
-  uint lid = GET_LOCAL_ID();
-  uint lsize = GET_LOCAL_SIZE();
-  uint index = GET_GROUP_ID();
+  uint lid = get_local_id(0);
+  uint lsize = get_local_size(0);
+  uint index = get_group_id(0);
   uint t = n >> deg;
   uint p = 1 << lgp;
   uint k = index & (p - 1);
@@ -51,7 +43,7 @@ KERNEL void radix_fft(GLOBAL FIELD* x, // Source buffer
     u[i] = FIELD_mul(tmp, x[i*t]);
     tmp = FIELD_mul(tmp, twiddle);
   }
-  BARRIER_LOCAL();
+  barrier(CLK_LOCAL_MEM_FENCE);
 
   const uint pqshift = max_deg - deg;
   for(uint rnd = 0; rnd < deg; rnd++) {
@@ -66,7 +58,7 @@ KERNEL void radix_fft(GLOBAL FIELD* x, // Source buffer
       if(di != 0) u[i1] = FIELD_mul(pq[di << rnd << pqshift], u[i1]);
     }
 
-    BARRIER_LOCAL();
+    barrier(CLK_LOCAL_MEM_FENCE);
   }
 
   for(uint i = counts >> 1; i < counte >> 1; i++) {
@@ -76,9 +68,9 @@ KERNEL void radix_fft(GLOBAL FIELD* x, // Source buffer
 }
 
 /// Multiplies all of the elements by `field`
-KERNEL void mul_by_field(GLOBAL FIELD* elements,
+__kernel void mul_by_field(__global FIELD* elements,
                         uint n,
                         FIELD field) {
-  const uint gid = GET_GLOBAL_ID();
+  const uint gid = get_global_id(0);
   elements[gid] = FIELD_mul(elements[gid], field);
 }

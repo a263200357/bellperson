@@ -12,7 +12,6 @@ fn tmp_path(filename: &str) -> PathBuf {
 }
 
 /// `GPULock` prevents two kernel objects to be instantiated simultaneously.
-#[allow(clippy::upper_case_acronyms)]
 #[derive(Debug)]
 pub struct GPULock(File);
 impl GPULock {
@@ -53,37 +52,22 @@ impl PriorityLock {
         debug!("Priority lock acquired!");
         PriorityLock(f)
     }
-
     pub fn wait(priority: bool) {
         if !priority {
-            if let Err(err) = File::create(tmp_path(PRIORITY_LOCK_NAME))
+            File::create(tmp_path(PRIORITY_LOCK_NAME))
                 .unwrap()
                 .lock_exclusive()
-            {
-                warn!("failed to create priority log: {:?}", err);
-            }
+                .unwrap();
         }
     }
-
     pub fn should_break(priority: bool) -> bool {
-        if priority {
-            return false;
-        }
-        if let Err(err) = File::create(tmp_path(PRIORITY_LOCK_NAME))
-            .unwrap()
-            .try_lock_shared()
-        {
-            // Check that the error is actually a locking one
-            if err.raw_os_error() == fs2::lock_contended_error().raw_os_error() {
-                return true;
-            } else {
-                warn!("failed to check lock: {:?}", err);
-            }
-        }
-        false
+        !priority
+            && File::create(tmp_path(PRIORITY_LOCK_NAME))
+                .unwrap()
+                .try_lock_exclusive()
+                .is_err()
     }
 }
-
 impl Drop for PriorityLock {
     fn drop(&mut self) {
         self.0.unlock().unwrap();
@@ -94,15 +78,15 @@ impl Drop for PriorityLock {
 use super::error::{GPUError, GPUResult};
 use super::fft::FFTKernel;
 use super::multiexp::MultiexpKernel;
+use crate::bls::Engine;
 use crate::domain::create_fft_kernel;
 use crate::multiexp::create_multiexp_kernel;
 
 macro_rules! locked_kernel {
     ($class:ident, $kern:ident, $func:ident, $name:expr) => {
-        #[allow(clippy::upper_case_acronyms)]
         pub struct $class<E>
         where
-            E: pairing::Engine + crate::gpu::GpuEngine,
+            E: Engine,
         {
             log_d: usize,
             priority: bool,
@@ -111,7 +95,7 @@ macro_rules! locked_kernel {
 
         impl<E> $class<E>
         where
-            E: pairing::Engine + crate::gpu::GpuEngine,
+            E: Engine,
         {
             pub fn new(log_d: usize, priority: bool) -> $class<E> {
                 $class::<E> {

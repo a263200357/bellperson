@@ -8,18 +8,18 @@
  * threads running in parallel for calculating a multiexp instance.
  */
 
-KERNEL void POINT_bellman_multiexp(
-    GLOBAL POINT_affine *bases,
-    GLOBAL POINT_projective *buckets,
-    GLOBAL POINT_projective *results,
-    GLOBAL EXPONENT *exps,
+__kernel void POINT_bellman_multiexp(
+    __global POINT_affine *bases,
+    __global POINT_projective *buckets,
+    __global POINT_projective *results,
+    __global EXPONENT *exps,
     uint n,
     uint num_groups,
     uint num_windows,
     uint window_size) {
 
   // We have `num_windows` * `num_groups` threads per multiexp.
-  const uint gid = GET_GLOBAL_ID();
+  const uint gid = get_global_id(0);
   if(gid >= num_windows * num_groups) return;
 
   // We have (2^window_size - 1) buckets.
@@ -44,7 +44,7 @@ KERNEL void POINT_bellman_multiexp(
   for(uint i = nstart; i < nend; i++) {
     uint ind = EXPONENT_get_bits(exps[i], bits, w);
 
-    #if defined(OPENCL_NVIDIA) || defined(CUDA)
+    #ifdef NVIDIA
       // O_o, weird optimization, having a single special case makes it
       // tremendously faster!
       // 511 is chosen because it's half of the maximum bucket len, but

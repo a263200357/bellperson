@@ -1,19 +1,22 @@
-use std::convert::TryInto;
-use std::ops::AddAssign;
+use std::mem::size_of;
 
 use ff::PrimeField;
-use group::{prime::PrimeCurveAffine, Curve, Group};
+use groupy::{CurveAffine, CurveProjective};
 use rayon::prelude::*;
 
 pub const WINDOW_SIZE: usize = 8;
 
 /// Abstraction over either a slice or a getter to produce a fixed number of scalars.
-pub enum ScalarList<'a, G: PrimeCurveAffine, F: Fn(usize) -> <G::Scalar as PrimeField>::Repr> {
+pub enum ScalarList<
+    'a,
+    G: CurveAffine,
+    F: Fn(usize) -> <G::Scalar as PrimeField>::Repr + Sync + Send,
+> {
     Slice(&'a [<G::Scalar as PrimeField>::Repr]),
     Getter(F, usize),
 }
 
-impl<'a, G: PrimeCurveAffine, F: Fn(usize) -> <G::Scalar as PrimeField>::Repr>
+impl<'a, G: CurveAffine, F: Fn(usize) -> <G::Scalar as PrimeField>::Repr + Sync + Send>
     ScalarList<'a, G, F>
 {
     pub fn len(&self) -> usize {
@@ -25,10 +28,10 @@ impl<'a, G: PrimeCurveAffine, F: Fn(usize) -> <G::Scalar as PrimeField>::Repr>
 }
 
 pub type Getter<G> =
-    dyn Fn(usize) -> <<G as PrimeCurveAffine>::Scalar as PrimeField>::Repr + Sync + Send;
+    dyn Fn(usize) -> <<G as CurveAffine>::Scalar as PrimeField>::Repr + Sync + Send;
 
 /// Abstraction over owned and referenced multiscalar precomputations.
-pub trait MultiscalarPrecomp<G: PrimeCurveAffine>: Send + Sync {
+pub trait MultiscalarPrecomp<G: CurveAffine>: Send + Sync {
     fn window_size(&self) -> usize;
     fn window_mask(&self) -> u64;
     fn tables(&self) -> &[Vec<G>];
@@ -37,7 +40,7 @@ pub trait MultiscalarPrecomp<G: PrimeCurveAffine>: Send + Sync {
 
 /// Owned variant of the multiscalar precomputations.
 #[derive(Clone, Debug)]
-pub struct MultiscalarPrecompOwned<G: PrimeCurveAffine> {
+pub struct MultiscalarPrecompOwned<G: CurveAffine> {
     num_points: usize,
     window_size: usize,
     window_mask: u64,
@@ -45,7 +48,7 @@ pub struct MultiscalarPrecompOwned<G: PrimeCurveAffine> {
     tables: Vec<Vec<G>>,
 }
 
-impl<G: PrimeCurveAffine> PartialEq for MultiscalarPrecompOwned<G> {
+impl<G: CurveAffine> PartialEq for MultiscalarPrecompOwned<G> {
     fn eq(&self, other: &Self) -> bool {
         self.num_points == other.num_points
             && self.window_size == other.window_size
@@ -59,7 +62,7 @@ impl<G: PrimeCurveAffine> PartialEq for MultiscalarPrecompOwned<G> {
     }
 }
 
-impl<G: PrimeCurveAffine> MultiscalarPrecomp<G> for MultiscalarPrecompOwned<G> {
+impl<G: CurveAffine> MultiscalarPrecomp<G> for MultiscalarPrecompOwned<G> {
     fn window_size(&self) -> usize {
         self.window_size
     }
@@ -85,7 +88,7 @@ impl<G: PrimeCurveAffine> MultiscalarPrecomp<G> for MultiscalarPrecompOwned<G> {
 
 /// Referenced version of the multiscalar precomputations.
 #[derive(Debug)]
-pub struct MultiscalarPrecompRef<'a, G: PrimeCurveAffine> {
+pub struct MultiscalarPrecompRef<'a, G: CurveAffine> {
     num_points: usize,
     window_size: usize,
     window_mask: u64,
@@ -93,7 +96,7 @@ pub struct MultiscalarPrecompRef<'a, G: PrimeCurveAffine> {
     tables: &'a [Vec<G>],
 }
 
-impl<G: PrimeCurveAffine> MultiscalarPrecomp<G> for MultiscalarPrecompRef<'_, G> {
+impl<G: CurveAffine> MultiscalarPrecomp<G> for MultiscalarPrecompRef<'_, G> {
     fn window_size(&self) -> usize {
         self.window_size
     }
@@ -118,7 +121,7 @@ impl<G: PrimeCurveAffine> MultiscalarPrecomp<G> for MultiscalarPrecompRef<'_, G>
 }
 
 /// Precompute the tables for fixed bases.
-pub fn precompute_fixed_window<G: PrimeCurveAffine>(
+pub fn precompute_fixed_window<G: CurveAffine>(
     points: &[G],
     window_size: usize,
 ) -> MultiscalarPrecompOwned<G> {
@@ -131,11 +134,11 @@ pub fn precompute_fixed_window<G: PrimeCurveAffine>(
             let mut table = Vec::with_capacity(table_entries);
             table.push(*point);
 
-            let mut cur_precomp_point = point.to_curve();
+            let mut cur_precomp_point = point.into_projective();
 
             for _ in 1..table_entries {
-                cur_precomp_point.add_assign(point);
-                table.push(cur_precomp_point.to_affine());
+                cur_precomp_point.add_assign_mixed(point);
+                table.push(cur_precomp_point.into_affine());
             }
 
             table
@@ -153,24 +156,19 @@ pub fn precompute_fixed_window<G: PrimeCurveAffine>(
 
 /// Multipoint scalar multiplication
 /// Only supports window sizes that evenly divide a limb and nbits!!
-pub fn multiscalar<G: PrimeCurveAffine>(
+pub fn multiscalar<G: CurveAffine>(
     k: &[<G::Scalar as ff::PrimeField>::Repr],
     precomp_table: &dyn MultiscalarPrecomp<G>,
     nbits: usize,
-) -> G::Curve {
-    // k is interpreted as having 64bit limbs
-    debug_assert_eq!(
-        std::mem::size_of::<<G::Scalar as ff::PrimeField>::Repr>() % 8,
-        0
-    );
-    const BITS_PER_LIMB: usize = std::mem::size_of::<u64>() * 8;
+) -> G::Projective {
+    const BITS_PER_LIMB: usize = size_of::<u64>() * 8;
     // TODO: support more bit sizes
     if nbits % precomp_table.window_size() != 0 || BITS_PER_LIMB % precomp_table.window_size() != 0
     {
         panic!("Unsupported multiscalar window size!");
     }
 
-    let mut result = G::Curve::identity();
+    let mut result = G::Projective::zero();
 
     // nbits must be evenly divided by window_size!
     let num_windows = (nbits + precomp_table.window_size() - 1) / precomp_table.window_size();
@@ -182,23 +180,21 @@ pub fn multiscalar<G: PrimeCurveAffine>(
         let window_in_limb = i % (BITS_PER_LIMB / precomp_table.window_size());
 
         for _ in 0..precomp_table.window_size() {
-            result = result.double();
+            result.double();
         }
         let mut prev_idx = 0;
         let mut prev_table: &Vec<G> = &precomp_table.tables()[0];
         let mut table: &Vec<G> = &precomp_table.tables()[0];
 
         for (m, point) in k.iter().enumerate() {
-            let point_limb =
-                u64::from_le_bytes(point.as_ref()[limb * 8..(limb + 1) * 8].try_into().unwrap());
-            idx = point_limb >> (window_in_limb * precomp_table.window_size())
+            idx = point.as_ref()[limb] >> (window_in_limb * precomp_table.window_size())
                 & precomp_table.window_mask();
             if idx > 0 {
                 table = &precomp_table.tables()[m];
                 prefetch(&table[idx as usize - 1]);
             }
             if prev_idx > 0 && m > 0 {
-                result.add_assign(&prev_table[prev_idx as usize - 1]);
+                result.add_assign_mixed(&prev_table[prev_idx as usize - 1]);
             }
             prev_idx = idx;
             prev_table = table;
@@ -206,7 +202,7 @@ pub fn multiscalar<G: PrimeCurveAffine>(
 
         // Perform the final addition
         if prev_idx > 0 {
-            result.add_assign(&prev_table[prev_idx as usize - 1]);
+            result.add_assign_mixed(&prev_table[prev_idx as usize - 1]);
         }
     }
 
@@ -214,13 +210,13 @@ pub fn multiscalar<G: PrimeCurveAffine>(
 }
 
 /// Perform a threaded multiscalar multiplication and accumulation.
-pub fn par_multiscalar<F, G: PrimeCurveAffine>(
+pub fn par_multiscalar<F, G: CurveAffine>(
     points: &ScalarList<'_, G, F>,
     precomp_table: &dyn MultiscalarPrecomp<G>,
     nbits: usize,
-) -> G::Curve
+) -> G::Projective
 where
-    F: Fn(usize) -> <G::Scalar as PrimeField>::Repr + Sync,
+    F: Fn(usize) -> <G::Scalar as PrimeField>::Repr + Sync + Send,
 {
     let num_points = points.len();
 
@@ -244,9 +240,7 @@ where
         .into_par_iter()
         .map(|id| {
             // Temporary storage for scalars
-            let mut scalar_storage: Vec<<G::Scalar as PrimeField>::Repr> = (0..chunk_size)
-                .map(|_| <G::Scalar as PrimeField>::Repr::default())
-                .collect();
+            let mut scalar_storage = vec![<G::Scalar as PrimeField>::Repr::default(); chunk_size];
 
             let start_idx = id * chunk_size;
             debug_assert!(start_idx < num_points);
@@ -269,10 +263,13 @@ where
 
             multiscalar(&scalars, &subset, nbits)
         }) // Accumulate results
-        .reduce(G::Curve::identity, |mut acc, part| {
-            acc.add_assign(&part);
-            acc
-        })
+        .reduce(
+            || G::Projective::zero(),
+            |mut acc, part| {
+                acc.add_assign(&part);
+                acc
+            },
+        )
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -293,25 +290,205 @@ fn prefetch<T>(p: *const T) {
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 fn prefetch<T>(p: *const T) {}
 
+/*pub struct VariableBaseMSM;*/
+
+//impl VariableBaseMSM {
+//fn msm_inner<E: Engine>(
+//bases: &[E::G1],
+//scalars: &[<E::Fr as PrimeField>::Repr],
+//) -> G::Projective
+//where
+//G::Projective: ProjectiveCurve<Affine = G>,
+//{
+//let c = if scalars.len() < 32 {
+//3
+//} else {
+//super::ln_without_floats(scalars.len()) + 2
+//};
+
+//let num_bits = <G::ScalarField as PrimeField>::Params::MODULUS_BITS as usize;
+//let fr_one = G::ScalarField::one().into_repr();
+
+//let zero = G::Projective::zero();
+//let window_starts: Vec<_> = (0..num_bits).step_by(c).collect();
+
+//#[cfg(feature = "parallel")]
+//let window_starts_iter = window_starts.into_par_iter();
+//#[cfg(not(feature = "parallel"))]
+//let window_starts_iter = window_starts.into_iter();
+
+//// Each window is of size `c`.
+//// We divide up the bits 0..num_bits into windows of size `c`, and
+//// in parallel process each such window.
+//let window_sums: Vec<_> = window_starts_iter
+//.map(|w_start| {
+//let mut res = zero;
+//// We don't need the "zero" bucket, so we only have 2^c - 1 buckets
+//let log2_n_bucket = if (w_start % c) != 0 { w_start % c } else { c };
+//let mut buckets = vec![zero; (1 << log2_n_bucket) - 1];
+
+//scalars
+//.iter()
+//.zip(bases)
+//.filter(|(s, _)| !s.is_zero())
+//.for_each(|(&scalar, base)| {
+//if scalar == fr_one {
+//// We only process unit scalars once in the first window.
+//if w_start == 0 {
+//res.add_assign_mixed(base);
+//}
+//} else {
+//let mut scalar = scalar;
+
+//// We right-shift by w_start, thus getting rid of the
+//// lower bits.
+//scalar.divn(w_start as u32);
+
+//// We mod the remaining bits by the window size.
+//let scalar = scalar.as_ref()[0] % (1 << c);
+
+//// If the scalar is non-zero, we update the corresponding
+//// bucket.
+//// (Recall that `buckets` doesn't have a zero bucket.)
+//if scalar != 0 {
+//buckets[(scalar - 1) as usize].add_assign_mixed(base);
+//}
+//}
+//});
+//let buckets = G::Projective::batch_normalization_into_affine(&buckets);
+
+//let mut running_sum = G::Projective::zero();
+//for b in buckets.into_iter().rev() {
+//running_sum.add_assign_mixed(&b);
+//res += &running_sum;
+//}
+
+//(res, log2_n_bucket)
+//})
+//.collect();
+
+//// We store the sum for the lowest window.
+//let lowest = window_sums.first().unwrap().0;
+
+//// We're traversing windows from high to low.
+//lowest
+//+ &window_sums[1..].iter().rev().fold(
+//zero,
+//|total: G::Projective, (sum_i, window_size): &(G::Projective, usize)| {
+//let mut total = total + sum_i;
+//for _ in 0..*window_size {
+//total.double_in_place();
+//}
+//total
+//},
+//)
+//}
+
+//pub fn multi_scalar_mul<G: AffineCurve>(
+//bases: &[G],
+//scalars: &[<G::ScalarField as PrimeField>::BigInt],
+//) -> G::Projective {
+//Self::msm_inner(bases, scalars)
+//}
+
+//pub fn multi_scalar_mul_batched<G: AffineCurve, BigInt: BigInteger>(
+//bases: &[G],
+//scalars: &[BigInt],
+//num_bits: usize,
+//) -> G::Projective {
+//let c = if scalars.len() < 32 {
+//1
+//} else {
+//super::ln_without_floats(scalars.len()) + 2
+//};
+
+//let zero = G::Projective::zero();
+//let window_starts: Vec<_> = (0..num_bits).step_by(c).collect();
+
+//#[cfg(feature = "parallel")]
+//let window_starts_iter = window_starts.into_par_iter();
+//#[cfg(not(feature = "parallel"))]
+//let window_starts_iter = window_starts.into_iter();
+
+//// Each window is of size `c`.
+//// We divide up the bits 0..num_bits into windows of size `c`, and
+//// in parallel process each such window.
+//let window_sums: Vec<_> = window_starts_iter
+//.map(|w_start| {
+//// We don't need the "zero" bucket, so we only have 2^c - 1 buckets
+//let log2_n_bucket = if (w_start % c) != 0 { w_start % c } else { c };
+//let n_buckets = (1 << log2_n_bucket) - 1;
+
+//let _now = timer!();
+//let mut bucket_positions: Vec<_> = scalars
+//.iter()
+//.enumerate()
+//.map(|(pos, &scalar)| {
+//let mut scalar = scalar;
+
+//// We right-shift by w_start, thus getting rid of the
+//// lower bits.
+//scalar.divn(w_start as u32);
+
+//// We mod the remaining bits by the window size.
+//let res = (scalar.as_ref()[0] % (1 << c)) as i32;
+//BucketPosition {
+//bucket: (res - 1) as u32,
+//position: pos as u32,
+//}
+//})
+//.collect();
+//timer_println!(_now, "scalars->buckets");
+
+//let _now = timer!();
+//let buckets =
+//batch_bucketed_add::<G>(n_buckets, &bases[..], &mut bucket_positions[..]);
+//timer_println!(_now, "bucket add");
+
+//let _now = timer!();
+//let mut res = zero;
+//let mut running_sum = G::Projective::zero();
+//for b in buckets.into_iter().rev() {
+//running_sum.add_assign_mixed(&b);
+//res += &running_sum;
+//}
+//timer_println!(_now, "accumulating sums");
+//(res, log2_n_bucket)
+//})
+//.collect();
+
+//// We store the sum for the lowest window.
+//let lowest = window_sums.first().unwrap().0;
+
+//// We're traversing windows from high to low.
+//lowest
+//+ &window_sums[1..].iter().rev().fold(
+//zero,
+//|total: G::Projective, (sum_i, window_size): &(G::Projective, usize)| {
+//let mut total = total + sum_i;
+//for _ in 0..*window_size {
+//total.double_in_place();
+//}
+//total
+//},
+//)
+//}
+/*}*/
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use std::ops::Mul;
+    use crate::bls::{Fr, FrRepr, G1Affine, G1Projective};
 
-    use blstrs::{G1Affine, G1Projective, Scalar as Fr};
     use ff::Field;
     use rand_core::SeedableRng;
     use rand_xorshift::XorShiftRng;
 
-    fn multiscalar_naive(
-        points: &[G1Affine],
-        scalars: &[<Fr as PrimeField>::Repr],
-    ) -> G1Projective {
-        let mut acc = G1Projective::identity();
+    fn multiscalar_naive(points: &[G1Affine], scalars: &[FrRepr]) -> G1Projective {
+        let mut acc = G1Projective::zero();
         for (scalar, point) in scalars.iter().zip(points.iter()) {
-            let scalar = <Fr as PrimeField>::from_repr(*scalar).unwrap();
-            acc.add_assign(&point.mul(scalar));
+            acc.add_assign(&point.mul(*scalar));
         }
         acc
     }
@@ -326,11 +503,11 @@ mod tests {
         for _ in 0..50 {
             for (num_inputs, window_size) in &[(8, 4), (12, 1), (10, 1), (20, 2)] {
                 let points: Vec<G1Affine> = (0..*num_inputs)
-                    .map(|_| G1Projective::random(&mut rng).to_affine())
+                    .map(|_| G1Projective::random(&mut rng).into_affine())
                     .collect();
 
-                let scalars: Vec<<Fr as PrimeField>::Repr> = (0..*num_inputs)
-                    .map(|_| Fr::random(&mut rng).to_repr())
+                let scalars: Vec<FrRepr> = (0..*num_inputs)
+                    .map(|_| Fr::random(&mut rng).into_repr())
                     .collect();
 
                 let table = precompute_fixed_window::<G1Affine>(&points, *window_size);
@@ -339,7 +516,7 @@ mod tests {
                 let fast_result = multiscalar::<G1Affine>(
                     &scalars,
                     &table,
-                    std::mem::size_of::<<Fr as PrimeField>::Repr>() * 8,
+                    size_of::<<Fr as PrimeField>::Repr>() * 8,
                 );
 
                 assert_eq!(naive_result, fast_result);
@@ -357,11 +534,11 @@ mod tests {
         for _ in 0..50 {
             for (num_inputs, window_size) in &[(8, 4), (12, 1), (10, 1), (20, 2)] {
                 let points: Vec<G1Affine> = (0..*num_inputs)
-                    .map(|_| G1Projective::random(&mut rng).to_affine())
+                    .map(|_| G1Projective::random(&mut rng).into_affine())
                     .collect();
 
-                let scalars: Vec<<Fr as PrimeField>::Repr> = (0..*num_inputs)
-                    .map(|_| Fr::random(&mut rng).to_repr())
+                let scalars: Vec<FrRepr> = (0..*num_inputs)
+                    .map(|_| Fr::random(&mut rng).into_repr())
                     .collect();
 
                 let table = precompute_fixed_window::<G1Affine>(&points, *window_size);
@@ -370,7 +547,7 @@ mod tests {
                 let fast_result = par_multiscalar::<&Getter<G1Affine>, G1Affine>(
                     &ScalarList::Slice(&scalars),
                     &table,
-                    std::mem::size_of::<<Fr as PrimeField>::Repr>() * 8,
+                    size_of::<<Fr as PrimeField>::Repr>() * 8,
                 );
 
                 assert_eq!(naive_result, fast_result);

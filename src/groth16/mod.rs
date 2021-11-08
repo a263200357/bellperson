@@ -4,7 +4,7 @@
 
 // The `DummyEngine` currently only works on the CPU as G1/G2 is using `Fr` and `Fr` isn't
 // supported by the GPU kernels
-#[cfg(all(test, not(any(feature = "cuda", feature = "opencl"))))]
+#[cfg(all(test, not(feature = "gpu")))]
 mod tests;
 
 pub mod aggregate;

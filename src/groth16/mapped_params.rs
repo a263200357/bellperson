@@ -1,5 +1,5 @@
-use group::{prime::PrimeCurveAffine, UncompressedEncoding};
-use pairing::MultiMillerLoop;
+use crate::bls::Engine;
+use groupy::{CurveAffine, EncodedPoint};
 
 use crate::SynthesisError;
 
@@ -14,10 +14,7 @@ use std::sync::Arc;
 
 use super::{ParameterSource, PreparedVerifyingKey, VerifyingKey};
 
-pub struct MappedParameters<E>
-where
-    E: MultiMillerLoop,
-{
+pub struct MappedParameters<E: Engine> {
     /// The parameter file we're reading from.  
     pub param_file_path: PathBuf,
     /// The file descriptor we have mmaped.
@@ -52,10 +49,7 @@ where
     pub checked: bool,
 }
 
-impl<'a, E> ParameterSource<E> for &'a MappedParameters<E>
-where
-    E: MultiMillerLoop,
-{
+impl<'a, E: Engine> ParameterSource<E> for &'a MappedParameters<E> {
     type G1Builder = (Arc<Vec<E::G1Affine>>, usize);
     type G2Builder = (Arc<Vec<E::G2Affine>>, usize);
 
@@ -140,7 +134,7 @@ where
 // A re-usable method for parameter loading via mmap.  Unlike the
 // internal ones used elsewhere, this one does not update offset state
 // and simply does the cast and transform needed.
-pub fn read_g1<E: MultiMillerLoop>(
+pub fn read_g1<E: Engine>(
     mmap: &Mmap,
     range: Range<usize>,
     checked: bool,
@@ -149,35 +143,31 @@ pub fn read_g1<E: MultiMillerLoop>(
     // Safety: this operation is safe, because it's simply
     // casting to a known struct at the correct offset, given
     // the structure of the on-disk data.
-    let repr = unsafe {
-        &*(ptr as *const [u8] as *const <E::G1Affine as UncompressedEncoding>::Uncompressed)
-    };
+    let repr =
+        unsafe { *(ptr as *const [u8] as *const <E::G1Affine as CurveAffine>::Uncompressed) };
 
-    let affine: E::G1Affine = {
-        let affine_opt = if checked {
-            E::G1Affine::from_uncompressed(&repr)
-        } else {
-            E::G1Affine::from_uncompressed_unchecked(&repr)
-        };
-
-        Option::from(affine_opt)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "not on curve"))
-    }?;
-
-    if affine.is_identity().into() {
-        Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "point at infinity",
-        ))
+    if checked {
+        repr.into_affine()
     } else {
-        Ok(affine)
+        repr.into_affine_unchecked()
     }
+    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    .and_then(|e| {
+        if e.is_zero() {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "point at infinity",
+            ))
+        } else {
+            Ok(e)
+        }
+    })
 }
 
 // A re-usable method for parameter loading via mmap.  Unlike the
 // internal ones used elsewhere, this one does not update offset state
 // and simply does the cast and transform needed.
-pub fn read_g2<E: MultiMillerLoop>(
+pub fn read_g2<E: Engine>(
     mmap: &Mmap,
     range: Range<usize>,
     checked: bool,
@@ -186,27 +176,23 @@ pub fn read_g2<E: MultiMillerLoop>(
     // Safety: this operation is safe, because it's simply
     // casting to a known struct at the correct offset, given
     // the structure of the on-disk data.
-    let repr = unsafe {
-        &*(ptr as *const [u8] as *const <E::G2Affine as UncompressedEncoding>::Uncompressed)
-    };
+    let repr =
+        unsafe { *(ptr as *const [u8] as *const <E::G2Affine as CurveAffine>::Uncompressed) };
 
-    let affine: E::G2Affine = {
-        let affine_opt = if checked {
-            E::G2Affine::from_uncompressed(&repr)
-        } else {
-            E::G2Affine::from_uncompressed_unchecked(&repr)
-        };
-
-        Option::from(affine_opt)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "not on curve"))
-    }?;
-
-    if affine.is_identity().into() {
-        Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "point at infinity",
-        ))
+    if checked {
+        repr.into_affine()
     } else {
-        Ok(affine)
+        repr.into_affine_unchecked()
     }
+    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    .and_then(|e| {
+        if e.is_zero() {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "point at infinity",
+            ))
+        } else {
+            Ok(e)
+        }
+    })
 }

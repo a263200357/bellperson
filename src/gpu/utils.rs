@@ -1,5 +1,5 @@
 use log::{info, warn};
-use rust_gpu_tools::Device;
+use rust_gpu_tools::*;
 use std::collections::HashMap;
 use std::env;
 
@@ -40,24 +40,26 @@ lazy_static::lazy_static! {
             ("GeForce GTX 1650".to_string(), 896),
         ].into_iter().collect();
 
-        if let Ok(var) = env::var("BELLMAN_CUSTOM_GPU") {
-            for card in var.split(',') {
-                let splitted = card.split(':').collect::<Vec<_>>();
+        match env::var("BELLMAN_CUSTOM_GPU").and_then(|var| {
+            for card in var.split(",") {
+                let splitted = card.split(":").collect::<Vec<_>>();
                 if splitted.len() != 2 { panic!("Invalid BELLMAN_CUSTOM_GPU!"); }
                 let name = splitted[0].trim().to_string();
                 let cores : usize = splitted[1].trim().parse().expect("Invalid BELLMAN_CUSTOM_GPU!");
                 info!("Adding \"{}\" to GPU list with {} CUDA cores.", name, cores);
                 core_counts.insert(name, cores);
             }
-        }
+            Ok(())
+        }) { Err(_) => { }, Ok(_) => { } }
 
         core_counts
     };
 }
 
 const DEFAULT_CORE_COUNT: usize = 2560;
-pub fn get_core_count(name: &str) -> usize {
-    match CORE_COUNTS.get(name) {
+pub fn get_core_count(d: &opencl::Device) -> usize {
+    let name = d.name();
+    match CORE_COUNTS.get(&name[..]) {
         Some(&cores) => cores,
         None => {
             warn!(
@@ -73,12 +75,12 @@ pub fn get_core_count(name: &str) -> usize {
 }
 
 pub fn dump_device_list() {
-    for d in Device::all() {
+    for d in opencl::Device::all() {
         info!("Device: {:?}", d);
     }
 }
 
-#[cfg(any(feature = "cuda", feature = "opencl"))]
+#[cfg(feature = "gpu")]
 #[test]
 pub fn test_list_devices() {
     let _ = env_logger::try_init();

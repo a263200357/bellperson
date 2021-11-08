@@ -9,12 +9,7 @@ pub struct DensePolynomial<F: Field> {
 
 impl<F: Field> fmt::Debug for DensePolynomial<F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-        for (i, coeff) in self
-            .coeffs
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| !bool::from(c.is_zero()))
-        {
+        for (i, coeff) in self.coeffs.iter().enumerate().filter(|(_, c)| !c.is_zero()) {
             if i == 0 {
                 write!(f, "\n{:?}", coeff)?;
             } else if i == 1 {
@@ -34,10 +29,7 @@ impl<F: Field> DensePolynomial<F> {
         result.truncate_leading_zeros();
         // Check that either the coefficients vec is empty or that the last coeff is
         // non-zero.
-        assert!(result
-            .coeffs
-            .last()
-            .map_or(true, |coeff| !bool::from(coeff.is_zero())));
+        assert!(result.coeffs.last().map_or(true, |coeff| !coeff.is_zero()));
         result
     }
 
@@ -54,17 +46,14 @@ impl<F: Field> DensePolynomial<F> {
         if self.is_zero() {
             0
         } else {
-            assert!(self
-                .coeffs
-                .last()
-                .map_or(false, |coeff| !bool::from(coeff.is_zero())));
+            assert!(self.coeffs.last().map_or(false, |coeff| !coeff.is_zero()));
             self.coeffs.len() - 1
         }
     }
 
     /// Checks if the given polynomial is zero.
     pub fn is_zero(&self) -> bool {
-        self.coeffs.is_empty() || self.coeffs.iter().all(|coeff| coeff.is_zero().into())
+        self.coeffs.is_empty() || self.coeffs.iter().all(|coeff| coeff.is_zero())
     }
 
     pub fn zero() -> Self {
@@ -72,7 +61,7 @@ impl<F: Field> DensePolynomial<F> {
     }
 
     fn truncate_leading_zeros(&mut self) {
-        while self.coeffs.last().map_or(false, |c| c.is_zero().into()) {
+        while self.coeffs.last().map_or(false, |c| c.is_zero()) {
             self.coeffs.pop();
         }
     }
@@ -85,7 +74,7 @@ impl<'a, 'b, F: Field> Sub<&'a DensePolynomial<F>> for &'b DensePolynomial<F> {
         let mut result = if self.is_zero() {
             let mut result = other.clone();
             for coeff in &mut result.coeffs {
-                *coeff = -*coeff;
+                coeff.negate();
             }
             result
         } else if other.is_zero() {
@@ -124,7 +113,7 @@ impl<'a, 'b, F: Field> Div<&'a DensePolynomial<F>> for &'b DensePolynomial<F> {
             let mut quotient = vec![F::zero(); self.degree() - divisor.degree() + 1];
             let mut remainder: DensePolynomial<F> = self.clone();
             // Can unwrap here because we know self is not zero.
-            let divisor_leading_inv = divisor.coeffs.last().unwrap().invert().unwrap();
+            let divisor_leading_inv = divisor.coeffs.last().unwrap().inverse().unwrap();
             while !remainder.is_zero() && remainder.degree() >= divisor.degree() {
                 let mut cur_q_coeff = *remainder.coeffs.last().unwrap();
                 cur_q_coeff.mul_assign(&divisor_leading_inv);
@@ -136,7 +125,7 @@ impl<'a, 'b, F: Field> Div<&'a DensePolynomial<F>> for &'b DensePolynomial<F> {
                     x.mul_assign(div_coeff);
                     remainder.coeffs[cur_q_degree + i].sub_assign(&x);
                 }
-                while let Some(true) = remainder.coeffs.last().map(|c| c.is_zero().into()) {
+                while let Some(true) = remainder.coeffs.last().map(|c| c.is_zero()) {
                     remainder.coeffs.pop();
                 }
             }

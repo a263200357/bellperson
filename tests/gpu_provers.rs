@@ -1,21 +1,23 @@
-use bellperson::{Circuit, ConstraintSystem, SynthesisError};
-use ff::PrimeField;
+use bellperson::{bls::Engine, Circuit, ConstraintSystem, SynthesisError};
+use ff::{Field, PrimeField};
 
 #[derive(Clone)]
 pub struct DummyDemo {
     pub interations: u64,
 }
 
-impl<Scalar: PrimeField> Circuit<Scalar> for DummyDemo {
-    fn synthesize<CS: ConstraintSystem<Scalar>>(self, cs: &mut CS) -> Result<(), SynthesisError> {
-        let mut x_val = Scalar::from(2u64);
-        let mut x = cs.alloc(|| "", || Ok(x_val))?;
+impl<E: Engine> Circuit<E> for DummyDemo {
+    fn synthesize<CS: ConstraintSystem<E>>(self, cs: &mut CS) -> Result<(), SynthesisError> {
+        let mut x_val = E::Fr::from_str("2");
+        let mut x = cs.alloc(|| "", || x_val.ok_or(SynthesisError::AssignmentMissing))?;
 
         for _ in 0..self.interations {
             // Allocate: x * x = x2
-            let x2_val = x_val.square();
-
-            let x2 = cs.alloc(|| "", || Ok(x2_val))?;
+            let x2_val = x_val.map(|mut e| {
+                e.square();
+                e
+            });
+            let x2 = cs.alloc(|| "", || x2_val.ok_or(SynthesisError::AssignmentMissing))?;
 
             // Enforce: x * x = x2
             cs.enforce(|| "", |lc| lc + x, |lc| lc + x, |lc| lc + x2);
@@ -26,7 +28,7 @@ impl<Scalar: PrimeField> Circuit<Scalar> for DummyDemo {
 
         cs.enforce(
             || "",
-            |lc| lc + (x_val, CS::one()),
+            |lc| lc + (x_val.unwrap(), CS::one()),
             |lc| lc + CS::one(),
             |lc| lc + x,
         );
@@ -35,14 +37,14 @@ impl<Scalar: PrimeField> Circuit<Scalar> for DummyDemo {
     }
 }
 
-#[cfg(any(feature = "cuda", feature = "opencl"))]
+#[cfg(feature = "gpu")]
 #[test]
 pub fn test_parallel_prover() {
+    use bellperson::bls::Bls12;
     use bellperson::groth16::{
         create_random_proof, create_random_proof_in_priority, generate_random_parameters,
         prepare_verifying_key, verify_proof,
     };
-    use blstrs::Bls12;
     use rand::thread_rng;
     use std::thread;
     use std::time::{Duration, Instant};
@@ -86,7 +88,7 @@ pub fn test_parallel_prover() {
             println!(
                 "Higher proof gen finished in {}s and {}ms",
                 now.elapsed().as_secs(),
-                now.elapsed().subsec_millis()
+                now.elapsed().subsec_nanos() / 1000000
             );
 
             // Sleep in between higher proofs so that LOWER thread can acquire GPU again
@@ -107,7 +109,7 @@ pub fn test_parallel_prover() {
             println!(
                 "Lower proof gen finished in {}s and {}ms",
                 now.elapsed().as_secs(),
-                now.elapsed().subsec_millis()
+                now.elapsed().subsec_nanos() / 1000000
             );
         }
     }

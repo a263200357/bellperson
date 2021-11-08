@@ -1,9 +1,8 @@
+use crate::bls::Engine;
+use crate::{ConstraintSystem, Index, LinearCombination, SynthesisError, Variable};
+use ff::{Field, PrimeField, ScalarEngine};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
-
-use ff::PrimeField;
-
-use crate::{ConstraintSystem, Index, LinearCombination, SynthesisError, Variable};
 
 #[derive(Clone, Copy)]
 struct OrderedVariable(Variable);
@@ -41,36 +40,33 @@ impl Ord for OrderedVariable {
     }
 }
 
-#[allow(clippy::upper_case_acronyms)]
-pub struct MetricCS<Scalar: PrimeField> {
+pub struct MetricCS<E: Engine> {
     named_objects: HashMap<String, NamedObject>,
     current_namespace: Vec<String>,
     #[allow(clippy::type_complexity)]
     constraints: Vec<(
-        LinearCombination<Scalar>,
-        LinearCombination<Scalar>,
-        LinearCombination<Scalar>,
+        LinearCombination<E>,
+        LinearCombination<E>,
+        LinearCombination<E>,
         String,
     )>,
     inputs: Vec<String>,
     aux: Vec<String>,
 }
 
-fn proc_lc<Scalar: PrimeField>(
-    terms: &LinearCombination<Scalar>,
-) -> BTreeMap<OrderedVariable, Scalar> {
+fn proc_lc<E: ScalarEngine>(terms: &LinearCombination<E>) -> BTreeMap<OrderedVariable, E::Fr> {
     let mut map = BTreeMap::new();
-    for (var, &coeff) in terms.iter() {
+    for (&var, &coeff) in terms.iter() {
         map.entry(OrderedVariable(var))
-            .or_insert_with(Scalar::zero)
+            .or_insert_with(E::Fr::zero)
             .add_assign(&coeff);
     }
 
     // Remove terms that have a zero coefficient to normalize
     let mut to_remove = vec![];
     for (var, coeff) in map.iter() {
-        if coeff.is_zero().into() {
-            to_remove.push(*var)
+        if coeff.is_zero() {
+            to_remove.push(var.clone())
         }
     }
 
@@ -81,7 +77,7 @@ fn proc_lc<Scalar: PrimeField>(
     map
 }
 
-impl<Scalar: PrimeField> MetricCS<Scalar> {
+impl<E: Engine> MetricCS<E> {
     pub fn new() -> Self {
         MetricCS::default()
     }
@@ -118,16 +114,20 @@ impl<Scalar: PrimeField> MetricCS<Scalar> {
             s.push_str(&format!("INPUT {}\n", &input))
         }
 
-        let negone = -Scalar::one();
+        let negone = {
+            let mut tmp = E::Fr::one();
+            tmp.negate();
+            tmp
+        };
 
-        let powers_of_two = (0..Scalar::NUM_BITS)
-            .map(|i| Scalar::from(2u64).pow_vartime(&[u64::from(i)]))
+        let powers_of_two = (0..E::Fr::NUM_BITS)
+            .map(|i| E::Fr::from_str("2").unwrap().pow(&[u64::from(i)]))
             .collect::<Vec<_>>();
 
-        let pp = |s: &mut String, lc: &LinearCombination<Scalar>| {
+        let pp = |s: &mut String, lc: &LinearCombination<E>| {
             s.push('(');
             let mut is_first = true;
-            for (var, coeff) in proc_lc::<Scalar>(&lc) {
+            for (var, coeff) in proc_lc::<E>(&lc) {
                 if coeff == negone {
                     s.push_str(" - ")
                 } else if !is_first {
@@ -135,7 +135,7 @@ impl<Scalar: PrimeField> MetricCS<Scalar> {
                 }
                 is_first = false;
 
-                if coeff != Scalar::one() && coeff != negone {
+                if coeff != E::Fr::one() && coeff != negone {
                     for (i, x) in powers_of_two.iter().enumerate() {
                         if x == &coeff {
                             s.push_str(&format!("2^{} . ", i));
@@ -143,7 +143,7 @@ impl<Scalar: PrimeField> MetricCS<Scalar> {
                         }
                     }
 
-                    s.push_str(&format!("{:?} . ", coeff))
+                    s.push_str(&format!("{} . ", coeff))
                 }
 
                 match var.0.get_unchecked() {
@@ -187,10 +187,10 @@ impl<Scalar: PrimeField> MetricCS<Scalar> {
     }
 }
 
-impl<Scalar: PrimeField> Default for MetricCS<Scalar> {
+impl<E: Engine> Default for MetricCS<E> {
     fn default() -> Self {
         let mut map = HashMap::new();
-        map.insert("ONE".into(), NamedObject::Var(MetricCS::<Scalar>::one()));
+        map.insert("ONE".into(), NamedObject::Var(MetricCS::<E>::one()));
         MetricCS {
             named_objects: map,
             current_namespace: vec![],
@@ -201,12 +201,12 @@ impl<Scalar: PrimeField> Default for MetricCS<Scalar> {
     }
 }
 
-impl<Scalar: PrimeField> ConstraintSystem<Scalar> for MetricCS<Scalar> {
+impl<E: Engine> ConstraintSystem<E> for MetricCS<E> {
     type Root = Self;
 
     fn alloc<F, A, AR>(&mut self, annotation: A, _f: F) -> Result<Variable, SynthesisError>
     where
-        F: FnOnce() -> Result<Scalar, SynthesisError>,
+        F: FnOnce() -> Result<E::Fr, SynthesisError>,
         A: FnOnce() -> AR,
         AR: Into<String>,
     {
@@ -218,7 +218,7 @@ impl<Scalar: PrimeField> ConstraintSystem<Scalar> for MetricCS<Scalar> {
 
     fn alloc_input<F, A, AR>(&mut self, annotation: A, _f: F) -> Result<Variable, SynthesisError>
     where
-        F: FnOnce() -> Result<Scalar, SynthesisError>,
+        F: FnOnce() -> Result<E::Fr, SynthesisError>,
         A: FnOnce() -> AR,
         AR: Into<String>,
     {
@@ -232,9 +232,9 @@ impl<Scalar: PrimeField> ConstraintSystem<Scalar> for MetricCS<Scalar> {
     where
         A: FnOnce() -> AR,
         AR: Into<String>,
-        LA: FnOnce(LinearCombination<Scalar>) -> LinearCombination<Scalar>,
-        LB: FnOnce(LinearCombination<Scalar>) -> LinearCombination<Scalar>,
-        LC: FnOnce(LinearCombination<Scalar>) -> LinearCombination<Scalar>,
+        LA: FnOnce(LinearCombination<E>) -> LinearCombination<E>,
+        LB: FnOnce(LinearCombination<E>) -> LinearCombination<E>,
+        LC: FnOnce(LinearCombination<E>) -> LinearCombination<E>,
     {
         let path = compute_path(&self.current_namespace, &annotation().into());
         let index = self.constraints.len();
