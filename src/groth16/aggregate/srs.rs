@@ -303,7 +303,7 @@ where
     }
 }
 
-pub fn setup_fake_srs<E, R>(rng: &mut R, size: usize) -> GenericSRS<E>
+pub fn setup_random_srs<E, R>(rng: &mut R, size: usize) -> GenericSRS<E>
 where
     E: Engine,
     E::Fr: PrimeFieldBits,
