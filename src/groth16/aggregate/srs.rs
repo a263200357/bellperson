@@ -303,6 +303,36 @@ where
     }
 }
 
+pub fn setup_fake_srs<E, R>(rng: &mut R, size: usize) -> GenericSRS<E>
+where
+    E: Engine,
+    E::Fr: PrimeFieldBits,
+    R: rand_core::RngCore,
+{
+    let alpha = E::Fr::random(&mut *rng);
+    let beta = E::Fr::random(&mut *rng);
+    let g = E::G1::random(&mut *rng);
+    let h = E::G2::random(&mut *rng);
+
+    let alpha = &alpha;
+    let h = &h;
+    let g = &g;
+    let beta = &beta;
+    par! {
+        let g_alpha_powers = structured_generators_scalar_power(2 * size, g, alpha),
+        let g_beta_powers = structured_generators_scalar_power(2 * size, g, beta),
+        let h_alpha_powers = structured_generators_scalar_power(2 * size, h, alpha),
+        let h_beta_powers = structured_generators_scalar_power(2 * size, h, beta)
+    };
+
+    GenericSRS {
+        g_alpha_powers,
+        g_beta_powers,
+        h_alpha_powers,
+        h_beta_powers,
+    }
+}
+
 pub(crate) fn structured_generators_scalar_power<G>(
     num: usize,
     g: &G,
